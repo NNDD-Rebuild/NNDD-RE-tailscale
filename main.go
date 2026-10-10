@@ -157,9 +157,18 @@ func main() {
 	}()
 
 	// ログイン状態の監視: 承認用 URL・接続状態を本体へ通知する
-	go watchState(ctx, srv, out, scheme, port)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		watchState(ctx, srv, out, scheme, port, *useHTTPS)
+	}()
 
 	<-ctx.Done()
+
+	// 先に待受を止める (ログアウト中に新しい接続を受けない)
+	sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer scancel()
+	_ = httpSrv.Shutdown(sctx)
 
 	select {
 	case <-logout:
@@ -173,14 +182,12 @@ func main() {
 	default:
 	}
 
-	sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer scancel()
-	_ = httpSrv.Shutdown(sctx)
 	_ = srv.Close()
+	<-watchDone // stopped の後に他のイベントが出ないようにする
 	out.emit(event{Event: "status", State: "stopped"})
 }
 
-func watchState(ctx context.Context, srv *tsnet.Server, out *emitter, scheme string, port int) {
+func watchState(ctx context.Context, srv *tsnet.Server, out *emitter, scheme string, port int, useHTTPS bool) {
 	lc, err := srv.LocalClient()
 	if err != nil {
 		return
@@ -188,7 +195,11 @@ func watchState(ctx context.Context, srv *tsnet.Server, out *emitter, scheme str
 	for ctx.Err() == nil {
 		w, err := lc.WatchIPNBus(ctx, ipn.NotifyInitialState)
 		if err != nil {
-			time.Sleep(time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
 			continue
 		}
 		for {
@@ -201,11 +212,23 @@ func watchState(ctx context.Context, srv *tsnet.Server, out *emitter, scheme str
 			}
 			if n.State != nil {
 				switch *n.State {
-				case ipn.NeedsLogin, ipn.NeedsMachineAuth:
+				case ipn.NeedsLogin:
 					out.emit(event{Event: "status", State: "needs_login"})
+				case ipn.NeedsMachineAuth:
+					// ログインは済んでいて、tailnet 管理者による端末の承認待ち
+					out.emit(event{Event: "status", State: "needs_approval"})
 				case ipn.Running:
 					st, err := lc.StatusWithoutPeers(ctx)
 					if err != nil || st.Self == nil {
+						continue
+					}
+					dns := strings.TrimSuffix(st.Self.DNSName, ".")
+					if dns == "" {
+						out.emit(event{Event: "error", Message: "MagicDNS が無効です。Tailscale の管理画面 (DNS) で MagicDNS を有効にしてください"})
+						continue
+					}
+					if useHTTPS && len(st.CertDomains) == 0 {
+						out.emit(event{Event: "error", Message: "HTTPS 証明書が有効ではありません。Tailscale の管理画面 (DNS) で HTTPS Certificates を有効にするか、HTTPS をオフにしてください"})
 						continue
 					}
 					ips := make([]string, 0, len(st.Self.TailscaleIPs))
@@ -214,7 +237,7 @@ func watchState(ctx context.Context, srv *tsnet.Server, out *emitter, scheme str
 					}
 					out.emit(event{
 						Event:   "ready",
-						DNSName: strings.TrimSuffix(st.Self.DNSName, "."),
+						DNSName: dns,
 						IPs:     ips,
 						Scheme:  scheme,
 						Port:    port,

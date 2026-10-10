@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -34,12 +35,10 @@ func checkUpstream(raw string) (*url.URL, error) {
 	if u.Scheme != "http" {
 		return nil, fmt.Errorf("upstream must be http: %q", raw)
 	}
-	host := u.Hostname()
-	if host != "localhost" {
-		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
-			return nil, fmt.Errorf("upstream must be a loopback address: %q", raw)
-		}
+	// ホスト名 (localhost 等) は解決先が変わりうるので受け付けず、loopback の IP リテラルだけにする
+	ip := net.ParseIP(u.Hostname())
+	if ip == nil || !ip.IsLoopback() {
+		return nil, fmt.Errorf("upstream must be a loopback IP address (127.0.0.1 or ::1): %q", raw)
 	}
 	if u.Port() == "" {
 		return nil, errors.New("upstream must include a port")
@@ -61,14 +60,15 @@ func newProxy(upstream *url.URL, secret, scheme string, whois WhoIsFunc) http.Ha
 			pr.Out.Header.Set("X-Forwarded-Proto", scheme)
 			scrub(pr.Out.Header)
 			id := pr.In.Context().Value(identityKey{}).(*Identity)
+			// 表示名は非 ASCII を含みうる (HTTP ヘッダーでは文字化けする) ため付けない
 			pr.Out.Header.Set("Tailscale-User-Login", id.Login)
-			pr.Out.Header.Set("Tailscale-User-Name", id.Name)
 			pr.Out.Header.Set("Tailscale-Node-Name", id.Node)
 			pr.Out.Header.Set(secretHeader, secret)
 		},
 		// 動画のストリーミングを溜め込まず流す
 		FlushInterval: -1,
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("proxy error: %s %s: %v", r.Method, r.URL.Path, err)
 			http.Error(w, "NNDD-RE に接続できません", http.StatusBadGateway)
 		},
 	}

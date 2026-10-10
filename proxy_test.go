@@ -10,12 +10,12 @@ import (
 )
 
 func TestCheckUpstream(t *testing.T) {
-	for _, ok := range []string{"http://127.0.0.1:12345", "http://localhost:1", "http://[::1]:5"} {
+	for _, ok := range []string{"http://127.0.0.1:12345", "http://[::1]:5"} {
 		if _, err := checkUpstream(ok); err != nil {
 			t.Errorf("%s: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"http://192.168.1.5:80", "http://example.com:80", "https://127.0.0.1:1", "http://127.0.0.1", "://x"} {
+	for _, bad := range []string{"http://192.168.1.5:80", "http://example.com:80", "http://localhost:1", "https://127.0.0.1:1", "http://127.0.0.1", "://x"} {
 		if _, err := checkUpstream(bad); err == nil {
 			t.Errorf("%s should be rejected", bad)
 		}
@@ -61,6 +61,9 @@ func TestProxyHeadersAndForwarding(t *testing.T) {
 	}
 	if gotHost != "pc.tail1234.ts.net" {
 		t.Errorf("host not preserved: %q", gotHost)
+	}
+	if got.Get("Tailscale-User-Name") != "" {
+		t.Errorf("display name must not be forwarded: %q", got.Get("Tailscale-User-Name"))
 	}
 	if got.Get("Tailscale-User-Login") != "alice@example.com" {
 		t.Errorf("login=%q", got.Get("Tailscale-User-Login"))

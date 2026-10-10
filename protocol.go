@@ -12,7 +12,7 @@ const protocolVersion = 1
 // 標準出力へ 1 行 1 JSON のイベントを出す (標準エラーはデバッグログ用)。
 //
 //	{"event":"hello","protocol":1,"version":"..."}
-//	{"event":"status","state":"starting|needs_login|running|stopped"}
+//	{"event":"status","state":"starting|needs_login|needs_approval|stopped"}
 //	{"event":"auth_url","url":"https://login.tailscale.com/a/..."}
 //	{"event":"ready","dnsName":"nndd-re.tailnet.ts.net","ips":["100.x.y.z"],"scheme":"http","port":80}
 //	{"event":"error","message":"..."}
