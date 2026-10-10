@@ -1,0 +1,58 @@
+name: release
+
+# v* のタグを push するとビルドして、バイナリと SHA256SUMS を GitHub Release に添付する。
+# NNDD-RE 本体は、このリリースのバージョンとハッシュを本体側に埋め込んで (ピン留めして) 取得する。
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: test
+        run: go test ./...
+      - name: build
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p dist
+          VERSION="${GITHUB_REF_NAME#v}"
+          for t in linux/amd64 windows/amd64 darwin/amd64 darwin/arm64; do
+            os=${t%/*}; arch=${t#*/}; ext=""
+            [ "$os" = windows ] && ext=".exe"
+            GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "dist/nndd-re-tailscale-${os}-${arch}${ext}" .
+          done
+          cp THIRD_PARTY_NOTICES.md LICENSE dist/
+          (cd dist && sha256sum nndd-re-tailscale-* > SHA256SUMS && cat SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --prerelease \
+            --notes "NNDD-RE 用 Tailscale サイドカー ${GITHUB_REF_NAME}。\`SHA256SUMS\` でバイナリを検証できます。"
