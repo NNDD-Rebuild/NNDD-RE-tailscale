@@ -1,0 +1,76 @@
+name: update-tailscale
+
+# 毎週月曜 日本時間 5:00 (日曜 20:00 UTC) に、tailscale.com の新しいバージョンを確認する。
+# 新しければ go.mod を更新し、テスト・4 ターゲットのビルドが通ったら PR を作る。
+# マージとリリースは人が行う (CI ではログイン・接続の動作確認ができないため、自動マージはしない)。
+on:
+  schedule:
+    - cron: '0 20 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: bump tailscale.com
+        id: bump
+        run: |
+          old=$(go list -m -f '{{.Version}}' tailscale.com)
+          go get tailscale.com@latest
+          go mod tidy
+          new=$(go list -m -f '{{.Version}}' tailscale.com)
+          echo "old=${old}" >> "$GITHUB_OUTPUT"
+          echo "new=${new}" >> "$GITHUB_OUTPUT"
+          if git diff --quiet -- go.mod go.sum; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "tailscale.com は最新です (${old})"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: verify
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+          for t in linux/amd64 windows/amd64 darwin/amd64 darwin/arm64; do
+            CGO_ENABLED=0 GOOS=${t%/*} GOARCH=${t#*/} go build -trimpath -o /dev/null .
+          done
+      - name: open pull request
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD: ${{ steps.bump.outputs.old }}
+          NEW: ${{ steps.bump.outputs.new }}
+        run: |
+          branch="chore/update-tailscale-${NEW}"
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
+            echo "ブランチ ${branch} は既にあります。PR 作成済みとして終了します"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "${branch}"
+          git add go.mod go.sum
+          git commit -m "chore: tailscale.com を ${NEW} に更新する"
+          git push origin "${branch}"
+          gh pr create --base main --head "${branch}" \
+            --title "chore: tailscale.com を ${NEW} に更新する" \
+            --body "tailscale.com ${OLD} → ${NEW}
+
+          自動作成。gofmt・go vet・go test と 4 ターゲット (linux/amd64、windows/amd64、darwin/amd64、darwin/arm64) のビルドは通っています。
+          **ログイン・接続の動作確認は CI ではできません。** 可能なら実機で確認してからマージしてください。
+
+          マージ後の手順:
+          1. Actions → release → Run workflow で、次のバージョン (例: v0.1.x) を入力してリリースを作る
+          2. 翌月曜 日本時間 6:00 に NNDD-RE 側がピン更新の PR を自動で作る (すぐ必要なら NNDD-RE の Actions → update-sidecar-pin を手動実行)"
